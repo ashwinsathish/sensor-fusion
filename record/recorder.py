@@ -247,7 +247,7 @@ class Run:
     def mark(self, label: str, t_pi: float | None) -> None:
         self.marks.append({"label": label, "t": t_pi, "t_local": time.time()})
 
-    def finish(self, clock: PiClock) -> dict:
+    def finish(self, clock: PiClock, clock_mode: str = "local_ntp") -> dict:
         rows = {k: s.n for k, s in self.streams.items()}
         for s in self.streams.values():
             s.close()
@@ -256,8 +256,15 @@ class Run:
             "name": self.name, "mode": self.mode,
             "started_local": self.t0, "duration_s": self.elapsed,
             "rows": rows,
-            "clock": {"master": "omron_pi", "final_offset_s": clock.offset,
-                      "note": "CSV 't' is Omron-Pi time; 't_local' is this host"},
+            "clock": {
+                "mode": clock_mode,
+                "offset_to_omron_pi_s": clock.offset,
+                "note": ("this host was NTP-synced; arrival times are its own clock"
+                         if clock_mode == "local_ntp" else
+                         "this host was NOT NTP-synced; arrival times were "
+                         "corrected by the measured offset to the Omron Pi, "
+                         "which is NTP-synced"),
+            },
             "dwells": self.dwell.dwells,
             "marks": self.marks,
             "stop_go_transitions": self.motion.stop_go,
@@ -276,9 +283,13 @@ class Run:
         return manifest
 
     # -- quality control -------------------------------------------------
-    def check(self) -> list[tuple[str, str]]:
+    def check(self, clock_mode: str = "local_ntp") -> list[tuple[str, str]]:
         """Returns [(level, message)] — 'ok' | 'warn' | 'bad'."""
         out = []
+        if clock_mode != "local_ntp":
+            out.append(("warn", "this host was not NTP-synced; latencies were "
+                                "corrected via the Omron Pi. Usable, but fix NTP "
+                                "for the next run."))
         n_gt = self.streams["omron"].n
         if n_gt < 50:
             out.append(("bad", f"only {n_gt} ground-truth rows — was MQTT up?"))

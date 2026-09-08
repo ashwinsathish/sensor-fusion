@@ -38,10 +38,32 @@ from endpoints import resolve_broker                 # noqa: E402
 frames.apply_site_overrides()
 
 
+def local_clock_is_synced() -> bool:
+    import subprocess
+    try:
+        return subprocess.run(["timedatectl", "show", "-p", "NTPSynchronized",
+                               "--value"], capture_output=True, text=True,
+                              timeout=5).stdout.strip().lower() == "yes"
+    except Exception:
+        return False
+
+
 class Session:
     def __init__(self, args):
         self.args = args
         self.clock = PiClock()
+        # Every latency is `arrival - source time`, measured against THIS
+        # machine's clock. If this clock is not disciplined, every latency is
+        # wrong by however far it is off — silently, and only discoverable
+        # weeks later.
+        #
+        # Rather than refuse to record, fall back: the Omron Pi IS NTP-synced,
+        # and it stamps every MQTT message, so its offset to this machine is
+        # measurable to well under a millisecond. Subtract that offset from
+        # arrival times and the latencies come out right anyway. The dataset
+        # records which mode was used.
+        self.clock_ok = local_clock_is_synced()
+        self.clock_mode = "local_ntp" if self.clock_ok else "pi_referenced"
         self.health = {k: Health() for k in ("omron", "uwb", "camera", "agilox")}
         self.run: Run | None = None
         self.stop = threading.Event()
@@ -49,6 +71,14 @@ class Session:
         self.root = os.path.abspath(args.out)
         self.finished: list[dict] = []
         os.makedirs(self.root, exist_ok=True)
+
+    def now(self) -> float:
+        """Arrival time on the best clock available."""
+        t = time.time()
+        if self.clock_ok:
+            return t
+        off = self.clock.offset
+        return t if off is None else t - off
 
     # -- routing ---------------------------------------------------------
     def emit(self, kind: str, row: dict) -> None:
@@ -71,8 +101,8 @@ class Session:
         if self.run is None:
             return None, None
         r = self.run
-        checks = r.check()
-        manifest = r.finish(self.clock)
+        checks = r.check(self.clock_mode)
+        manifest = r.finish(self.clock, self.clock_mode)
         self.run = None
         self.finished.append(manifest)
         return manifest, checks
@@ -80,9 +110,9 @@ class Session:
 
 # ── sources ──────────────────────────────────────────────────────────────────
 
-def _flag(d: dict) -> dict:
+def _flag(d: dict, S=None) -> dict:
     """The three fields every source shares, computed the same way for all."""
-    now = time.time()
+    now = S.now() if S is not None else time.time()
     tv = d.get("t_valid")
     is_arrival = bool(d.get("t_valid_is_arrival")) or tv is None
     if is_arrival:
@@ -132,7 +162,7 @@ def start_mqtt(S: Session):
             except Exception:
                 return
             if topic == a.topic_uwb_sal:
-                now = time.time()
+                now = S.now()
                 try:
                     xn, yn = float(d["x"]), float(d["y"])
                 except (KeyError, TypeError, ValueError):
@@ -172,7 +202,7 @@ def start_mqtt(S: Session):
                                        a.topic_agilox: "agilox"}.get(topic)
             if kind not in S.health:
                 return
-            base = _flag(d)
+            base = _flag(d, S)
             try:
                 xr, yr = float(d["x"]), float(d["y"])
             except (KeyError, TypeError, ValueError):
@@ -248,7 +278,7 @@ def start_mqtt(S: Session):
 
         # ---- legacy CSV topics ---------------------------------------
         row = raw.split(",")
-        now = time.time()
+        now = S.now()
         if topic == a.omron_topic:
             try:
                 t_pi = float(row[0])
@@ -261,7 +291,7 @@ def start_mqtt(S: Session):
             # A bare 1e-3 here (what this did before) lands the ground truth
             # ~21 m from where the cameras put the same robot.
             x, y = frames.omron_to_factory(xr, yr)
-            S.clock.add(now, t_pi)
+            S.clock.add(time.time(), t_pi)
             S.emit("omron", {
                 "t": f"{t_pi:.6f}", "x": f"{x:.4f}", "y": f"{y:.4f}",
                 "x_native": xr, "y_native": yr, "frame_in": "omron_raw_mm",
@@ -396,7 +426,12 @@ def screen(S: Session) -> str:
     L.append("")
     off = (f"{S.clock.offset:+.4f} s ({S.clock.n} samples)"
            if S.clock.offset is not None else f"{RED}waiting for Omron…{RST}")
-    L.append(f"  clock (Omron Pi is master)   {off}")
+    if S.clock_ok:
+        L.append(f"  clock  {GRN}local NTP{RST}   offset to Omron Pi {off}")
+    else:
+        L.append(f"  clock  {YEL}NOT NTP-synced — latencies corrected via the "
+                 f"Omron Pi{RST}")
+        L.append(f"         offset {off}")
     L.append("")
     L.append(f"  {'sensor':10s} {'Hz':>6s} {'last':>7s}  {'this run':>9s}   state")
     for key, label in (("omron", "OMRON gt"), ("uwb", "UWB"),

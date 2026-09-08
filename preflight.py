@@ -60,10 +60,11 @@ def check_clock() -> None:
     if synced:
         say("ok", "NTP synchronized")
     else:
-        say("bad", "NOT NTP-synchronized. Every latency in the dataset would be "
-                   "this machine's clock error, not a latency. Fix this first — "
-                   "point it at the same NTP server as the Omron Pi and the "
-                   "UWB anchors.")
+        say("warn", "NOT NTP-synchronized. The collector will fall back to "
+                    "referencing the Omron Pi's clock (which IS synced), so the "
+                    "latencies still come out right — but fix it if you can:  "
+                    "sudo timedatectl set-ntp true")
+    globals()["LOCAL_SYNCED"] = synced
     for line in out.splitlines():
         if "Local time" in line or "synchronized" in line:
             print(f"      {line.strip()}")
@@ -119,6 +120,17 @@ def main() -> int:
         say("bad", "paho-mqtt not installed")
         return 2
 
+    # When this machine's clock is not disciplined, correct arrival times by
+    # the measured offset to the Omron Pi — exactly what the collector does —
+    # so the latencies reported here are the ones that will be recorded.
+    pi_offsets = []
+
+    def now_corrected() -> float:
+        t = time.time()
+        if globals().get("LOCAL_SYNCED", True) or not pi_offsets:
+            return t
+        return t - min(pi_offsets)
+
     seen = defaultdict(list)          # topic -> [(t_recv, t_valid|None, x, y, kind)]
     raw_seen = defaultdict(int)
     clock_flags = defaultdict(set)
@@ -128,9 +140,22 @@ def main() -> int:
             c.subscribe(t, 0)
 
     def on_message(c, u, m):
-        now = time.time()
         raw_seen[m.topic] += 1
         body = m.payload.decode("utf-8", "replace")
+        # learn the offset first, so `now` is already corrected for this message
+        if m.topic.startswith("Omron") and not body.lstrip().startswith("{"):
+            try:
+                pi_offsets.append(time.time() - float(body.split(",")[0]))
+            except (ValueError, IndexError):
+                pass
+        elif body.lstrip().startswith("{"):
+            try:
+                _d = json.loads(body)
+                if _d.get("source") == "omron" and _d.get("t_valid"):
+                    pi_offsets.append(time.time() - float(_d["t_valid"]))
+            except Exception:
+                pass
+        now = now_corrected()
         if body.lstrip().startswith("{"):
             try:
                 d = json.loads(body)
@@ -200,6 +225,8 @@ def main() -> int:
                 say("bad", line + "  — far too large for a LAN. Check that "
                                   "publisher's clock.")
                 continue
+            if not globals().get("LOCAL_SYNCED", True):
+                line += "  (corrected via the Omron Pi)"
             say("ok", line)
         else:
             say("warn", line + ", NO source timestamp — its latency cannot be "
@@ -221,6 +248,12 @@ def main() -> int:
             say("bad", f"{kind} at ({mx:6.2f}, {my:5.2f}) m — OUTSIDE the "
                        f"{frames.FLOOR_X[1]:.0f} x {frames.FLOOR_Y[1]:.1f} m hall. "
                        "Its coordinate transform is wrong.")
+
+    if not any(k.startswith("uwb") or k == "uwb" for k in seen):
+        say("warn", "no UWB source is publishing. Someone has to be running the "
+                    "localisation program (tdoa_uwb, branch feat/tag_update_rate, "
+                    "localization_gui.py) — turning the tag on is not enough on "
+                    "its own. See AGENT_HANDOVER.md section 6.")
 
     print(f"\n{B}6. do the sources agree?{X}")
     gt = next((k for k in latest if k.startswith("omron")), None)

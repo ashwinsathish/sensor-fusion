@@ -194,10 +194,30 @@ optional import, since it is only used by the legacy TWR path and TDoA uses
 `scipy.least_squares`. `applab_pylib` (SAL-internal) **is** required, because
 it is how the backend receives the ROS stream.
 
-**First question to settle: is someone already running the UWB localisation?**
-The colleagues wrote both the publisher and a test receiver pointing at
-`10.0.0.3:1883`, which suggests they run it themselves. If `preflight.py` shows
-a UWB source, nothing needs to be run for UWB.
+**First question to settle: is the UWB localisation program running?**
+
+This trips people up, so be explicit with the user. Switching the tag on is
+**not** enough. The chain is:
+
+```
+  tag blinks  ->  anchors hear it, each anchor a Raspberry Pi running a ROS node
+              ->  ROS central node collects those messages
+              ->  localization_gui.py reads that stream, computes the position,
+                  publishes it to MQTT topic UWB/position
+```
+
+That last program has to be running on some computer. It could be a colleague's
+machine (they wrote the publisher and a test receiver pointing at
+`10.0.0.3:1883`, so probably yes) or it could be this laptop.
+
+`preflight.py` answers it empirically: if it lists a UWB source, someone is
+running it and there is nothing to do. If it warns that no UWB source is
+publishing, either ask the colleagues to start it, or start it here — which
+needs `applab_pylib` (SAL-internal, for the ROS stream) and the ROS central
+node's IP.
+
+Camera and Omron data are unaffected either way, so a run without UWB is still
+worth doing.
 
 ---
 
@@ -218,17 +238,37 @@ best. On the OIC wifi expect `10.0.0.3:1883` (or `193.171.203.67:1833`) and
 ./setup.sh --with-camera
 ```
 
-**3. The clock. This is the one that matters.**
+**3. The clock.** This laptop is being set up in the factory for the first
+time, so assume nothing.
+
 ```bash
 timedatectl
 ```
-Must say `System clock synchronized: yes`. If not:
+Want: `System clock synchronized: yes`. If not:
 ```bash
 sudo timedatectl set-ntp true
+timedatectl                                   # check again
 ```
-If it will not sync, stop and investigate before collecting — every latency in
-the dataset is measured against this machine's clock. This has already gone
-wrong once in this project (a machine 4.3 s off, unnoticed for days).
+Still not syncing? Diagnose rather than guess — the factory network *does*
+permit NTP (the Reolink cameras track pool.ntp.org and the anchor Pis are
+synced), so it should work:
+```bash
+systemctl status systemd-timesyncd            # or chronyd
+timedatectl show-timesync --all 2>/dev/null   # what server, has it ever reached it
+```
+If UDP/123 turns out to be blocked on this segment, point it at a local
+server instead — the same one the anchor Pis use is the right answer.
+
+**You are not blocked if it will not sync.** The collector detects an
+undisciplined clock and falls back to referencing the Omron Pi, which IS
+synced and stamps every MQTT message. It measures the offset to sub-millisecond
+and subtracts it from arrival times, so the latencies come out right anyway.
+`session.json` records `clock.mode` as `local_ntp` or `pi_referenced` so the
+dataset always says which was used. Verified: with the host deliberately 3.0 s
+slow, a 250 ms injected latency was still recorded as 250.6 ms.
+
+Prefer real NTP — the fallback depends on MQTT flowing and on the Omron Pi
+being correct — but do not cancel a collection trip over it.
 
 **4. Go/no-go.** Ask the user to park the robot where cameras and UWB can see
 it, then:

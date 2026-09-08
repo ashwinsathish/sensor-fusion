@@ -15,10 +15,19 @@ listens to all of it and writes the CSV files.** That program is
 
 ## "The UWB server" — there is no such machine
 
-Sorry, that was my sloppy wording. There is no dedicated UWB server. What
-exists is a **program** (`localization_gui.py` from the `tdoa_uwb` repo) that
-has to run on *some* computer. It reads raw radio data from the ROS central
-node, computes the tag's position, and publishes it to MQTT.
+Sorry, that was sloppy wording on my part. There is no dedicated UWB server.
+
+Switching the tag on is not by itself enough. What actually happens:
+
+```
+  tag blinks
+    -> each anchor hears it (every anchor is a Raspberry Pi running a ROS node)
+    -> a ROS central node collects those messages
+    -> a PROGRAM reads that stream, computes the position, and publishes it
+```
+
+That last program is `localization_gui.py` from the `tdoa_uwb` repo, and it has
+to be running on *some* computer. Nothing localises the tag until it does.
 
 So the real question is: **is somebody already running it?**
 
@@ -97,16 +106,25 @@ cd ~/sensor-fusion
 It creates a virtualenv, installs what is needed, checks whether there is a
 GPU, checks the clock, and self-tests the coordinate transforms.
 
-**If it says the clock is not synchronized, fix that before anything else:**
+**About the clock.** Every latency in the dataset is `arrival − source time`,
+measured against this laptop's clock. If it is a second off, every latency is a
+second off.
+
+Try to fix it properly:
 
 ```bash
 sudo timedatectl set-ntp true
-timedatectl                 # must say: System clock synchronized: yes
+timedatectl                 # want: System clock synchronized: yes
 ```
 
-Every latency in the dataset is `arrival − source time`, measured against this
-laptop's clock. If it is wrong by a second, every latency is wrong by a second,
-and you would not notice until the analysis.
+**But if it will not sync, you are still fine.** The collector notices and
+falls back to referencing the Omron Pi's clock, which is synced and arrives in
+every MQTT message. It measures the offset to under a millisecond and corrects
+the arrival times, and `session.json` records which mode was used. Tested with
+the host deliberately 3 seconds wrong: a 250 ms latency was still recorded as
+250.6 ms.
+
+So do not cancel the trip over NTP. Just do not ignore it either.
 
 ## Collection day
 
