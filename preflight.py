@@ -250,10 +250,17 @@ def main() -> int:
                        "Its coordinate transform is wrong.")
 
     if not any(k.startswith("uwb") or k == "uwb" for k in seen):
-        say("warn", "no UWB source is publishing. Someone has to be running the "
-                    "localisation program (tdoa_uwb, branch feat/tag_update_rate, "
-                    "localization_gui.py) — turning the tag on is not enough on "
-                    "its own. See AGENT_HANDOVER.md section 6.")
+        from endpoints import find_uwb_ws
+        ws = find_uwb_ws()
+        if ws:
+            say("warn", f"UWB is running at {ws[0]}:{ws[1]} ({ws[2]}) but only "
+                        f"serves a websocket — it is not on MQTT. Bridge it:\n"
+                        f"      python3 uwb/publish_uwb.py --ws ws://{ws[0]}:{ws[1]}/ws")
+        else:
+            say("warn", "no UWB anywhere — not on MQTT, and no localisation "
+                        "server answering. Switching the tag on is not enough; a "
+                        "program has to read the anchors and compute positions. "
+                        "See AGENT_HANDOVER.md section 6.")
 
     print(f"\n{B}6. do the sources agree?{X}")
     gt = next((k for k in latest if k.startswith("omron")), None)

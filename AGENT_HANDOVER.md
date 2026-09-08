@@ -194,6 +194,53 @@ optional import, since it is only used by the legacy TWR path and TDoA uses
 `scipy.least_squares`. `applab_pylib` (SAL-internal) **is** required, because
 it is how the backend receives the ROS stream.
 
+
+### Where the UWB localisation actually runs — settled by reading the code
+
+The user reasonably objected that they never start anything: in the Sionna GUI
+they click "show live UWB visualization" and a blue dot appears. Both things
+are true. Here is what that button does
+(`LIT_fac_ray_tracing/src/sionna_rt_gui/uwb_localization.py`):
+
+```python
+def start_uwb_server(state):
+    if _remote_source_enabled(state):
+        _start_remote_tunnel(state)
+        return                      # <- launches NOTHING locally
+    ...
+    state.process = subprocess.Popen(cmd)   # ROS/Serial mode only
+```
+
+and the default is
+```python
+self.uwb_comm_index: int = 2     #  2 == "Remote"
+_DEFAULT_REMOTE_UWB_URL = "http://193.171.203.67:8500"
+```
+
+So on the default setting the GUI **opens a tunnel to a UWB server already
+running at the factory** and reads its websocket. Nothing is started on the
+user's machine. That is why it feels like it needs nothing — the compute is
+someone else's machine, and the GUI hides it.
+
+(It could not run locally anyway: `applab_pylib`, which reads the ROS stream,
+is not installed in the `uwb-visualization` venv on that VM.)
+
+Two consequences for collection:
+
+1. **The UWB server is a separate machine that has to be up.** It was down when
+   this was checked (`193.171.203.67:8500` -> 503 through the proxy). If UWB is
+   missing on collection day, that server is the thing to chase, not the tag.
+2. **It serves a websocket, not MQTT.** Only the `feat/tag_update_rate` branch
+   publishes to `UWB/position`, and the factory server may still be running the
+   older code. So expect to need the bridge:
+   ```bash
+   python3 uwb/publish_uwb.py --ws ws://<uwb-host>:<port>/ws
+   ```
+   `endpoints.py` finds that server (tries `10.0.0.2:8000`, `127.0.0.1:8001`,
+   `193.171.203.67:8500`) and `preflight.py` tells you which case you are in:
+   UWB on MQTT already, UWB on websocket only (bridge it), or no UWB at all.
+
+
 **First question to settle: is the UWB localisation program running?**
 
 This trips people up, so be explicit with the user. Switching the tag on is

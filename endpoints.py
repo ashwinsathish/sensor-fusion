@@ -24,6 +24,16 @@ BROKERS = [
     ("193.171.203.67", 1833, "public, port-forwarded"),
 ]
 
+# The UWB localisation program serves a websocket. The Sionna GUI's default
+# "Remote" mode tunnels to it at 193.171.203.67:8500 rather than starting one
+# locally — which is why clicking "show live UWB" appears to need nothing
+# running: it is running, on a machine at the factory.
+UWB_WS = [
+    ("10.0.0.2", 8000, "factory LAN, direct (the UWB_system forward points here)"),
+    ("127.0.0.1", 8001, "started locally by the Sionna GUI"),
+    ("193.171.203.67", 8500, "public, port-forwarded"),
+]
+
 RTSP = [
     ("50.0.0.2", 554, "factory LAN, direct"),
     ("193.171.203.67", 8502, "public, port-forwarded (needs SF_RTSP_PROXY from SAL)"),
@@ -55,6 +65,11 @@ def find_rtsp(timeout: float = 2.5):
     return _first(RTSP, timeout)
 
 
+def find_uwb_ws(timeout: float = 2.5):
+    """The UWB localisation server's websocket, if one is running anywhere."""
+    return _first(UWB_WS, timeout)
+
+
 def resolve_broker(arg: str | None, port: int | None = None):
     """Turn a --broker argument into (host, port).
 
@@ -82,16 +97,20 @@ def main() -> int:
         up = reachable(host, port)
         any_broker = any_broker or up
         print(f"    {'✓' if up else '·'} {host}:{port:<6} {why}")
+    print("\n  UWB localisation server (websocket)")
+    for host, port, why in UWB_WS:
+        up = reachable(host, port)
+        print(f"    {'✓' if up else '·'} {host}:{port:<6} {why}")
     print("\n  cameras (RTSP)")
     for host, port, why in RTSP:
         up = reachable(host, port)
         print(f"    {'✓' if up else '·'} {host}:{port:<6} {why}")
 
-    b = find_broker()
-    r = find_rtsp()
+    b = find_broker(); r = find_rtsp(); w = find_uwb_ws()
     print("\n  chosen:")
     print(f"    broker  {b[0]}:{b[1]}" if b else "    broker  NONE REACHABLE")
     print(f"    rtsp    {r[0]}:{r[1]}" if r else "    rtsp    NONE REACHABLE")
+    print(f"    uwb ws  {w[0]}:{w[1]}" if w else "    uwb ws  none running")
     if not any_broker:
         print("\n  Without a broker nothing can be recorded. On the SAL VM run"
               "\n  ~/mqtt_tunnel.py first; on the factory network check the"

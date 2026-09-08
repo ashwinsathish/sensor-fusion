@@ -26,23 +26,31 @@ Switching the tag on is not by itself enough. What actually happens:
     -> a PROGRAM reads that stream, computes the position, and publishes it
 ```
 
-That last program is `localization_gui.py` from the `tdoa_uwb` repo, and it has
-to be running on *some* computer. Nothing localises the tag until it does.
+That last program is `localization_gui.py`, and it has to be running on *some*
+computer. Nothing localises the tag until it does.
 
-So the real question is: **is somebody already running it?**
+**And it already is — just not on your machine.** When you click "show live UWB
+visualization" in the Sionna GUI, the default setting is *Remote*: the GUI opens
+a tunnel to `193.171.203.67:8500` and reads a UWB server that is already
+running at the factory. It starts nothing locally. That is why it feels like it
+needs nothing — the work happens on a machine at the OIC and the GUI hides it.
 
-Your colleagues wrote the MQTT publisher and a test receiver
-(`UWB_mqtt_receiver.py`) pointing at `10.0.0.3:1883`, which strongly suggests
-they run it themselves. If so, **you run nothing for UWB.** You just listen.
+So for collection, two things follow:
 
-**Find out in 60 seconds**, from any machine that can reach the broker:
+- **That server has to be up.** It was down when last checked. If UWB is missing
+  on the day, chase that server, not the tag.
+- **It serves a websocket, not MQTT.** Only the newest branch publishes to MQTT,
+  and the factory server may still run the older code. If so, one extra command
+  bridges it — `preflight.py` tells you exactly which case you are in and prints
+  the command.
 
 ```bash
-python3 preflight.py --broker <broker-ip>
+python3 preflight.py
 ```
 
-If it lists a UWB source, it is already running and you are done thinking about
-it. If not, someone has to start it — either them, or you on the OIC laptop.
+Three possible answers: UWB is already on MQTT (do nothing), UWB is on
+websocket only (run the bridge it prints), or no UWB anywhere (ask whoever
+runs that server to start it).
 
 ## Which machine runs what
 
