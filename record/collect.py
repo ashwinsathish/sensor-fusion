@@ -62,6 +62,10 @@ class Session:
         # measurable to well under a millisecond. Subtract that offset from
         # arrival times and the latencies come out right anyway. The dataset
         # records which mode was used.
+        # UWB can arrive two ways: published to MQTT by the newest backend, or
+        # read straight off the localisation server's websocket. Both at once
+        # would write every fix twice, so MQTT wins and the websocket stands by.
+        self.uwb_mqtt_last: float = 0.0
         self.clock_ok = local_clock_is_synced()
         self.clock_mode = "local_ntp" if self.clock_ok else "pi_referenced"
         self.health = {k: Health() for k in ("omron", "uwb", "camera", "agilox")}
@@ -194,6 +198,8 @@ def start_mqtt(S: Session):
                     "method": "tdoa", "tag_node_id": d.get("tag_node_id", ""),
                     "rounds_deferred": d.get("rounds_deferred", ""),
                 })
+                S.uwb_mqtt_last = time.time()
+                S.status["uwb"] = "via MQTT"
                 return
 
             kind = d.get("source") or {a.topic_camera: "camera",
@@ -256,6 +262,9 @@ def start_mqtt(S: Session):
                             "conf": pc.get("conf", ""), "seq": d.get("seq", "")})
                     except (KeyError, TypeError, ValueError):
                         continue
+            if kind == "uwb":
+                S.uwb_mqtt_last = time.time()
+                S.status["uwb"] = "via MQTT"
             if kind == "omron":
                 try:
                     S.clock.add(time.time(), float(d["t_valid"]))
@@ -344,6 +353,11 @@ def start_uwb(S: Session):
                         except Exception:
                             continue
                         if not isinstance(d, dict) or d.get("type") != "UWB":
+                            continue
+                        if now - S.uwb_mqtt_last < 10.0:
+                            # the same fixes are already arriving on MQTT with
+                            # better metadata; do not record them twice
+                            S.status["uwb"] = "standby (MQTT is providing UWB)"
                             continue
                         src = "t_round" if d.get("t_round_s") else "arrival"
                         base = d["t_round_s"] if d.get("t_round_s") else now
@@ -492,7 +506,9 @@ def main() -> int:
     ap.add_argument("--topic-agilox", default="lit/fusion/v1/agilox")
     ap.add_argument("--topic-uwb-sal", default="UWB/position",
                     help="the SAL TDoA backend's own topic")
-    ap.add_argument("--uwb-ws", default="ws://127.0.0.1:8001/ws")
+    ap.add_argument("--uwb-ws", default="auto",
+                    help="the localisation server's websocket, or 'auto' to "
+                         "find it (see ../endpoints.py)")
     ap.add_argument("--no-uwb", action="store_true")
     ap.add_argument("--camera-config", nargs="*", default=[])
     ap.add_argument("--factory-config",
@@ -501,11 +517,21 @@ def main() -> int:
     args = ap.parse_args()
     args.broker_host, args.broker_port = resolve_broker(
         args.broker_host, args.broker_port)
+    if args.uwb_ws == "auto" and not args.no_uwb:
+        from endpoints import find_uwb_ws
+        found = find_uwb_ws()
+        if found:
+            args.uwb_ws = f"ws://{found[0]}:{found[1]}/ws"
+            print(f"uwb websocket: {found[0]}:{found[1]}  ({found[2]})")
+        else:
+            args.uwb_ws = ""
+            print("uwb websocket: none found — UWB will only be recorded if it "
+                  "arrives on MQTT")
 
     S = Session(args)
     print("connecting sensors…")
     cli = start_mqtt(S)
-    if not args.no_uwb:
+    if not args.no_uwb and args.uwb_ws:
         start_uwb(S)
     cams = None
     if args.camera_config:

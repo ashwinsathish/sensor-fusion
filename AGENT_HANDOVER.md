@@ -230,15 +230,30 @@ Two consequences for collection:
 1. **The UWB server is a separate machine that has to be up.** It was down when
    this was checked (`193.171.203.67:8500` -> 503 through the proxy). If UWB is
    missing on collection day, that server is the thing to chase, not the tag.
-2. **It serves a websocket, not MQTT.** Only the `feat/tag_update_rate` branch
-   publishes to `UWB/position`, and the factory server may still be running the
-   older code. So expect to need the bridge:
-   ```bash
-   python3 uwb/publish_uwb.py --ws ws://<uwb-host>:<port>/ws
-   ```
-   `endpoints.py` finds that server (tries `10.0.0.2:8000`, `127.0.0.1:8001`,
-   `193.171.203.67:8500`) and `preflight.py` tells you which case you are in:
-   UWB on MQTT already, UWB on websocket only (bridge it), or no UWB at all.
+2. **It may serve only a websocket, not MQTT.** Only the `feat/tag_update_rate`
+   branch publishes to `UWB/position`; the factory server may still run older
+   code. **This needs no extra process** — `collect.py` reads the websocket
+   directly as a source, and `--uwb-ws auto` finds it. `uwb/publish_uwb.py` is
+   only for putting UWB on MQTT for *other* consumers; do not run it just to
+   feed the collector, that would be a pointless round trip.
+
+   If both paths are live the collector records MQTT and puts the websocket on
+   standby, so nothing is written twice. Verified: websocket-only 50 rows in
+   5 s, then with MQTT also live only 25 more (the MQTT rate), status
+   "standby (MQTT is providing UWB)".
+
+**What the server actually computes**, so the trade-offs are clear: it receives
+per-anchor arrival timestamps over ROS, groups them by ranging round, and
+solves for position — distances from time-of-flight then multilateration for
+TWR, or anchor-clock correction from the sync exchanges then hyperbolic
+equations for TDoA. It has to run somewhere with access to the ROS network.
+
+**Whether UWB carries a source timestamp depends on which code that server
+runs, and the patch in this repo only affects the local copy.** If the factory
+server runs unpatched older code, UWB fixes arrive with no time attached, the
+collector stamps arrival, and `t_valid_is_arrival` is set true — positions stay
+usable, only UWB *latency* becomes unmeasurable. To fix it properly the patch
+has to be applied where the server actually runs.
 
 
 **First question to settle: is the UWB localisation program running?**
