@@ -1,0 +1,10 @@
+[Unit]
+Description=Stopgap clock correction from HTTPS Date headers (until real NTP works)
+Documentation=file:///home/sathishkumara/sensor-fusion/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/sathishkumara/sensor-fusion/tools/web_timesync.py --apply
+TimeoutStartSec=180

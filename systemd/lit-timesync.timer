@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly stopgap clock correction
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1h
+RandomizedDelaySec=90
+Persistent=true
+
+[Install]
+WantedBy=timers.target
