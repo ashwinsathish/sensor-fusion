@@ -345,18 +345,31 @@ private packages that are hardest to obtain — but it needs
 `git checkout feat/tag_update_rate` and `pip install filterpy`. That is
 someone else's machine, so it needs asking.
 
-**Three ways to get UWB, in order of preference:**
+**UWB latency is a required output, not a nice-to-have.** Do not treat
+"positions without a source timestamp" as an acceptable fallback — measuring
+how late UWB is *is* half the point of the dataset. Three things stand between
+here and a correctly-timestamped UWB feed, all small:
 
-1. Ask Andreas to run the TDoA branch on his own PC (he says he usually runs it
-   locally). Publishes to MQTT; nothing else to do.
-2. Get Server2 switched to `feat/tag_update_rate` + `filterpy` installed.
-3. **Fallback that needs no permission:** start what is already on Server2 and
-   let `collect.py` read its websocket. Positions are recorded and usable; only
-   UWB *latency* is unmeasurable, because that branch attaches no source
-   timestamp.
+1. **The branch.** Server2 is on `demo/OIC-dataExport`; the TDoA code is on
+   `feat/tag_update_rate`. Same remote, so `git fetch && git checkout` works.
+2. **`filterpy`** is not installed there. One `pip install`.
+3. **The patch in `uwb/patch_backend.py`** — and this is the one that is easy
+   to miss. Even on the TDoA branch the published `timestamp` is the arrival of
+   whatever message *triggered* the solve, while `evaluate_measurements()`
+   deliberately waits until a round is >= 2 rounds old. At 10 Hz that is a
+   systematic ~200 ms error: UWB would look faster than it is and every
+   position would be attributed to the wrong instant. Switching the branch
+   alone yields a number that looks fine and is wrong.
 
-Do not block collection on this. Camera + ground truth alone is still a
-worthwhile dataset.
+`applab_pylib` is unavoidable — the backend's `start()` only implements `ROS`
+and `Serial`; `ROS_legacy` (which would have used plain HTTP) is accepted in
+`__init__` but has no branch in `start()`, so it is dead code. The package
+exists on Server2 as an editable install at
+`Workspace/repos/UWB_repos/applab_pylib` and can be copied.
+
+Preferred: **run it on the Legion**, where the branch, the patch and restarts
+are all under our control. Failing that, get Server2 switched — it already has
+the two private packages, which is what makes it convenient.
 
 ---
 
