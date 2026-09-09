@@ -283,6 +283,83 @@ worth doing.
 
 ---
 
+## 6b. The factory machines, as found on 9 Sep 2026
+
+```
+10.0.0.3    oic-server2     MQTT broker (1883); a UWB checkout; the orchestrator
+                            / node-controller in tmux `services:1` (must stay up)
+10.0.0.2    server1         UWB_system web
+40.0.0.37   sal-UPN-APL01   the Omron status collector. An UpBoard, NOT a
+                            Raspberry Pi. DataCollector.py from
+                            ~/workspace/repos/iws-testbed (branch `ashwin-fix`),
+                            tmux session `omron`, user `sal`.
+50.0.0.2    Reolink NVR     RTSP 554
+```
+
+### The Omron collector hangs, and it hangs *quietly*
+
+On 9 Sep it had been publishing nothing for 68 minutes while looking perfectly
+healthy: process alive, six threads, no traceback, ARCL socket `ESTAB` with
+empty queues. **0.2% CPU over 81 minutes** and a thread parked in `do_select` —
+blocked on a read that never returns. The CSV it writes had simply stopped
+growing. A fresh ARCL connection answered in 0.13 s, so the robot was fine.
+
+Diagnosed cause: `DataCollector.on_message` calls `omro.DO_TASK(payload)` on the
+**MQTT callback thread** while `omro_thread` calls `STATUS()` on the **same
+telnet connection**, with no lock. Under a burst of `gotoPoint` commands the two
+interleave, one consumes the reply the other is waiting for, and the waiting
+loop has no timeout. An earlier run died from the same race with
+`KeyError: 'Status'`.
+
+**Two things follow, and the second matters more tomorrow:**
+
+1. Restarting the tmux session clears it. That only buys time.
+2. **The race is triggered by MQTT `gotoPoint` commands.** So during a
+   collection run, drive the robot with the pendant or MobilePlanner —
+   **not** by sending ARCL goto commands over MQTT. That sidesteps the bug
+   entirely without touching anyone's code, and losing ground truth mid-run
+   would waste the whole session.
+
+`preflight.py` now treats a silent `Omron/status` as blocking and prints where
+to go. Note that `ps` will look healthy — check whether the CSV is still
+growing.
+
+### The UWB checkout on Server2 is the wrong branch
+
+```
+/home/oic-wlc2/Workspace/repos/localization-visualization/localization_gui.py
+branch: demo/OIC-dataExport          (clean)
+```
+
+- `backend/uwb_tdoa_localization_backend.py` **does not exist** — no TDoA here
+- `grep "UWB/position"` → **no matches** — this version does not publish to MQTT
+- venv has `applab-pylib` and `ranging-utils` (both editable installs from
+  `Workspace/repos/UWB_repos/`), plus `scipy` and `shapely` — but **not
+  `filterpy`**, which `kalman_filter.py` needs
+- it was **not running**; tmux `services:0` sits parked in that directory, idle
+- the node-controller that must stay up is `services:1`, `main.py` from
+  `Workspace/repos/orchestrator/src`
+
+So Server2 is the *right* machine for the TDoA branch — it already has the two
+private packages that are hardest to obtain — but it needs
+`git checkout feat/tag_update_rate` and `pip install filterpy`. That is
+someone else's machine, so it needs asking.
+
+**Three ways to get UWB, in order of preference:**
+
+1. Ask Andreas to run the TDoA branch on his own PC (he says he usually runs it
+   locally). Publishes to MQTT; nothing else to do.
+2. Get Server2 switched to `feat/tag_update_rate` + `filterpy` installed.
+3. **Fallback that needs no permission:** start what is already on Server2 and
+   let `collect.py` read its websocket. Positions are recorded and usable; only
+   UWB *latency* is unmeasurable, because that branch attaches no source
+   timestamp.
+
+Do not block collection on this. Camera + ground truth alone is still a
+worthwhile dataset.
+
+---
+
 ## 7. What to do on arrival — in this order
 
 Run these yourself. Report results; do not make the user type them.

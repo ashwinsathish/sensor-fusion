@@ -17,6 +17,18 @@ from __future__ import annotations
 import socket
 import sys
 
+# The factory machines, mapped 9 Sep 2026 by inspecting the router's
+# port-forward table and then confirming on the machines themselves:
+#
+#   10.0.0.3    oic-server2   MQTT broker (1883), UWB code checkout,
+#                             orchestrator/node-controller (tmux services:1)
+#   10.0.0.2    server1       UWB_system web
+#   40.0.0.37   sal-UPN-APL01 the Omron status collector — an UpBoard, NOT a
+#                             Raspberry Pi. Runs DataCollector.py from
+#                             ~/workspace/repos/iws-testbed (branch ashwin-fix)
+#                             in tmux session `omron`, user `sal`.
+#   50.0.0.2    Reolink NVR   RTSP 554
+#
 # Ordered best-first. Direct beats forwarded beats proxied.
 BROKERS = [
     ("10.0.0.3", 1883, "factory LAN, direct"),

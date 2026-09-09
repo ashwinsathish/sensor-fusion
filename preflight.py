@@ -265,7 +265,19 @@ def main() -> int:
     print(f"\n{B}6. do the sources agree?{X}")
     gt = next((k for k in latest if k.startswith("omron")), None)
     if gt is None:
-        say("warn", "no ground truth seen — cannot cross-check the others")
+        # This is not a warning. Without Omron/status there is no ground truth
+        # and no fallback master clock — the session would be worthless.
+        say("bad", "NO GROUND TRUTH. Omron/status is silent, so there is nothing "
+                   "to measure the other sensors against and no clock to fall "
+                   "back on. Do not collect.\n"
+                   "      The publisher is DataCollector.py on 40.0.0.37 "
+                   "(sal-UPN-APL01, an UpBoard), in tmux session `omron` as user "
+                   "`sal`, repo ~/workspace/repos/iws-testbed.\n"
+                   "      Seen 9 Sep 2026: the process stays alive with no "
+                   "traceback and 0.2% CPU, blocked in a socket read. It is HUNG, "
+                   "not crashed, so `ps` looks healthy — check whether the CSV it "
+                   "writes has stopped growing. Restarting the tmux session "
+                   "clears it.")
     else:
         gx, gy, _ = latest[gt]
         others = [k for k in latest if not k.startswith("omron")
