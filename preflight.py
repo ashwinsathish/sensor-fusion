@@ -7,8 +7,9 @@ Checks, in the order that matters:
   2. the broker is reachable
   3. the coordinate transforms are right
   4. each source is publishing, at what rate, with usable timestamps
-  5. every source puts the robot INSIDE the hall
-  6. the sources agree with each other about where the robot is
+  5. how well the source clocks agree with the collector's
+  6. every source puts the robot INSIDE the hall
+  7. the sources agree with each other about where the robot is
 
 Check 6 is the one that catches a wrong coordinate transform. Three systems
 reporting the same robot several metres apart is invisible in a live plot and
@@ -34,6 +35,7 @@ import frames                                              # noqa: E402
 from endpoints import resolve_broker                       # noqa: E402
 
 G, Y, R, B, X = "\033[32m", "\033[33m", "\033[31m", "\033[1m", "\033[0m"
+DIM = "\033[2m"
 OK, WARN, BAD = f"{G}✓{X}", f"{Y}!{X}", f"{R}✗{X}"
 
 _fatal = []
@@ -234,7 +236,50 @@ def main() -> int:
         if False in clock_flags.get(kind, set()):
             say("bad", f"{kind} reports clock_synced=false")
 
-    print(f"\n{B}5. positions inside the hall{X}")
+    # ── clock agreement ──────────────────────────────────────────────────
+    # latency = true_transit + (collector_clock - source_clock), and
+    # true_transit is never negative. So the MINIMUM observed latency is an
+    # upper bound on how far that source's clock is ahead of the collector's.
+    # It is the only direct read on clock agreement we get without touching
+    # the source machines.
+    print(f"\n{B}5. clock agreement{X}")
+    print(f"      {'source':16s} {'min':>9s} {'median':>9s} {'p95':>9s}   reading")
+    any_ts = False
+    for kind, rows in sorted(seen.items()):
+        lat = sorted(r[0] - r[1] for r in rows if r[1] is not None)
+        if len(lat) < 10:
+            continue
+        any_ts = True
+        lo, med, hi = lat[0], lat[len(lat)//2], lat[int(len(lat)*0.95)]
+        if lo < -0.005:
+            note = f"{R}clock is >={abs(lo)*1000:.0f} ms AHEAD of this machine{X}"
+            _fatal.append(f"{kind}: clock {abs(lo)*1000:.0f} ms ahead of the collector")
+        elif lo < 0.002:
+            note = "agrees to within ~2 ms"
+        elif lo < 0.030:
+            note = f"clock offset + transit <= {lo*1000:.0f} ms"
+        else:
+            note = f"{Y}offset + transit <= {lo*1000:.0f} ms — check this clock{X}"
+        print(f"      {kind:16s} {lo*1000:8.1f}ms {med*1000:8.1f}ms "
+              f"{hi*1000:8.1f}ms   {note}")
+    if not any_ts:
+        say("warn", "no source carries a timestamp, so clock agreement cannot "
+                    "be checked at all")
+    else:
+        print(f"      {DIM}min latency bounds the clock offset: transit is never "
+              f"negative,{X}")
+        print(f"      {DIM}so a source cannot appear to arrive before it was "
+              f"measured.{X}")
+        if not globals().get("LOCAL_SYNCED", True):
+            # Arrival times were corrected using the Omron's own clock, so the
+            # Omron row is zero by construction and says nothing. Only the other
+            # sources carry information in this mode.
+            print(f"      {Y}This machine is not NTP-synced, so arrival times were "
+                  f"corrected{X}")
+            print(f"      {Y}against the Omron — its row above is circular. Read the "
+                  f"others.{X}")
+
+    print(f"\n{B}6. positions inside the hall{X}")
     latest = {}
     for kind, rows in sorted(seen.items()):
         pts = [(r[2], r[3]) for r in rows[-30:]]
@@ -262,7 +307,7 @@ def main() -> int:
                         "program has to read the anchors and compute positions. "
                         "See AGENT_HANDOVER.md section 6.")
 
-    print(f"\n{B}6. do the sources agree?{X}")
+    print(f"\n{B}7. do the sources agree?{X}")
     gt = next((k for k in latest if k.startswith("omron")), None)
     if gt is None:
         # This is not a warning. Without Omron/status there is no ground truth
