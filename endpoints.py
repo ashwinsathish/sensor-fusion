@@ -22,7 +22,8 @@ import sys
 #
 #   10.0.0.3    oic-server2   MQTT broker (1883), UWB code checkout,
 #                             orchestrator/node-controller (tmux services:1)
-#   10.0.0.2    server1       UWB_system web
+#   10.0.0.2    NTP-server-host  FACTORY REFERENCE CLOCK (stratum-3 NTP), and the
+#                             ROS central node the UWB solver reads (port 8000)
 #   40.0.0.37   sal-UPN-APL01 the Omron status collector — an UpBoard, NOT a
 #                             Raspberry Pi. Runs DataCollector.py from
 #                             ~/workspace/repos/iws-testbed (branch ashwin-fix)
@@ -36,13 +37,17 @@ BROKERS = [
     ("193.171.203.67", 1833, "public, port-forwarded"),
 ]
 
-# The UWB localisation program serves a websocket. The Sionna GUI's default
-# "Remote" mode tunnels to it at 193.171.203.67:8500 rather than starting one
-# locally — which is why clicking "show live UWB" appears to need nothing
-# running: it is running, on a machine at the factory.
+REFERENCE_NTP = "10.0.0.2"
+ROS_CENTRAL = ("10.0.0.2", 8000)
+
+# localization_gui.py serves its websocket on port 8000 of whatever machine
+# runs it (the README's 8001 is wrong, and 8001 on Server2 is the
+# orchestrator). NOT 10.0.0.2:8000 — that is the ROS central node's API, which
+# the solver reads FROM. The feat/tag_update_rate solver publishes to MQTT
+# anyway, so the websocket is only a fallback.
 UWB_WS = [
-    ("10.0.0.2", 8000, "factory LAN, direct (the UWB_system forward points here)"),
-    ("127.0.0.1", 8001, "started locally by the Sionna GUI"),
+    ("127.0.0.1", 8000, "localization_gui.py on this machine"),
+    ("10.0.0.3", 8000, "localization_gui.py on Server2"),
     ("193.171.203.67", 8500, "public, port-forwarded"),
 ]
 
@@ -113,6 +118,9 @@ def main() -> int:
     for host, port, why in UWB_WS:
         up = reachable(host, port)
         print(f"    {'✓' if up else '·'} {host}:{port:<6} {why}")
+    print("\n  ROS central node (what the UWB solver reads)")
+    up = reachable(*ROS_CENTRAL)
+    print(f"    {'✓' if up else '·'} {ROS_CENTRAL[0]}:{ROS_CENTRAL[1]}")
     print("\n  cameras (RTSP)")
     for host, port, why in RTSP:
         up = reachable(host, port)

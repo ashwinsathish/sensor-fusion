@@ -205,6 +205,20 @@ TDOA_PAYLOAD_NEW = '''                            # --- lit-fusion -------------
                             }'''
 
 
+# ── localization_gui.py: unique MQTT client id ──────────────────────────────
+# The GUI connects with the hardcoded client id 'LOCClient'. MQTT allows one
+# connection per id, so a second instance anywhere (Andreas runs it on his PC)
+# makes the broker drop the first; both auto-reconnect and evict each other
+# about once a second. The broker log shows this happening on 15 Sep: 20
+# collisions between 40.0.0.11 and 40.0.0.29. The result is gaps plus positions
+# from two separate solvers interleaved on the same topic.
+GUI_FILE = "localization_gui.py"
+GUI_CLIENT = "'LOCClient', data_queue, data_buffer)"
+GUI_CLIENT_NEW = ("f\"LOCClient-{__import__('socket').gethostname()}-"
+                  "{__import__('os').getpid()}\", data_queue, data_buffer)  "
+                  "# lit-fusion: unique id, see sensor-fusion/uwb/patch_backend.py")
+
+
 def _apply(path: str, edits: list, dry: bool) -> str:
     """edits = [(find, replace)]. Returns a status string."""
     src = open(path).read()
@@ -243,6 +257,7 @@ def main() -> int:
                     (TDOA_ROUND, TDOA_ROUND + "\n" + TDOA_TRACK),
                     (TDOA_RETURN, TDOA_META),
                     (TDOA_PAYLOAD, TDOA_PAYLOAD_NEW)],
+        GUI_FILE: [(GUI_CLIENT, GUI_CLIENT_NEW)],
     }
 
     found = 0

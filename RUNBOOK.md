@@ -53,9 +53,12 @@ The factory network permits it — the Reolink cameras and the anchor Pis are
 already synced.
 
 ```bash
-sudo timedatectl set-ntp true
-timedatectl            # must say: System clock synchronized: yes
+sudo tools/set_ntp.sh        # points NTP at the factory reference 10.0.0.2
+python3 timeref.py           # measured offset to 10.0.0.2 — want < 2 ms
 ```
+
+Do the same on the **Omron UpBoard (40.0.0.37)** — on 16 Sep it was ~30 ms off
+on public NTP, and it stamps the ground truth.
 
 ---
 
@@ -93,11 +96,16 @@ python3 /home/sathishkumara/sensor-fusion/uwb/patch_backend.py \
 Then run it as normal:
 
 ```bash
-python3 localization_gui.py --env environments/environment_oic9_M2.json --ip <ros-central-ip>
+python3 localization_gui.py --env environments/environment_oic8_M2.json \
+        --ip 10.0.0.2 --server_ip 0.0.0.0 --server_port 8000
 ```
 
 It publishes to **`UWB/position`** on `10.0.0.3:1883` by itself — no bridge
 needed, the collector reads that topic directly.
+
+Use `oic8_M2`, not `oic9_M2` — the 9-anchor file has no `tags` key and crashes at
+startup. **Only one solver may run at a time** (check nobody else — e.g.
+Andreas — has it running); `preflight.py` flags two interleaved solvers.
 
 `uwb/publish_uwb.py` is only a fallback for the websocket-only setup.
 

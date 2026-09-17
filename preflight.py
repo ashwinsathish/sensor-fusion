@@ -51,25 +51,36 @@ def say(level, msg):
 
 
 def check_clock() -> None:
+    import timeref
     print(f"\n{B}1. this machine's clock{X}")
     try:
         out = subprocess.run(["timedatectl"], capture_output=True, text=True,
                              timeout=5).stdout
         synced = "System clock synchronized: yes" in out
     except Exception:
-        synced = False
-        out = ""
-    if synced:
-        say("ok", "NTP synchronized")
-    else:
-        say("warn", "NOT NTP-synchronized. The collector will fall back to "
-                    "referencing the Omron Pi's clock (which IS synced), so the "
-                    "latencies still come out right — but fix it if you can:  "
-                    "sudo timedatectl set-ntp true")
+        synced, out = False, ""
     globals()["LOCAL_SYNCED"] = synced
-    for line in out.splitlines():
-        if "Local time" in line or "synchronized" in line:
-            print(f"      {line.strip()}")
+
+    # "synchronized: yes" is not enough — the Omron UpBoard said yes while
+    # sitting 30 ms off on public NTP. Measure against the factory reference.
+    r = timeref.measure(timeref.REFERENCE_NTP, samples=8)
+    globals()["REF"] = r
+    if r is None:
+        say("warn", f"factory reference {timeref.REFERENCE_NTP} not reachable over "
+                    f"NTP (off the factory network, or UDP/123 blocked). Local NTP "
+                    f"synchronized: {'yes' if synced else 'NO'}.")
+        return
+    off = r["offset_s"] * 1000
+    msg = (f"{abs(off):.2f} ms {'behind' if off > 0 else 'ahead of'} the factory "
+           f"reference {timeref.REFERENCE_NTP} (round trip {r['delay_s']*1000:.2f} ms)")
+    if abs(off) < 2:
+        say("ok", msg)
+    elif abs(off) < 50:
+        say("warn", msg + ". The collector corrects for this, but fix it: "
+                          "sudo tools/set_ntp.sh")
+    else:
+        say("warn", msg + ". The collector corrects for this, but this machine's "
+                          "clock is badly off: sudo tools/set_ntp.sh")
 
 
 def check_transforms() -> None:
@@ -82,6 +93,7 @@ def check_transforms() -> None:
                     "snapshot. If someone recalibrated, this dataset will disagree "
                     "with the rest of the stack.")
     env = next((e for e in (
+        "/home/sathishkumara/tdoa_uwb/environments/environment_oic8_M2.json",
         "/home/sathishkumara/tdoa_uwb/environments/environment_oic9_M2.json",
         "/home/sathishkumara/uwb-visualization/environments/environment_oic.json")
         if os.path.exists(e)), None)
@@ -95,7 +107,7 @@ def check_transforms() -> None:
             say("bad", f"{len(bad)} UWB anchor(s) transform to outside the hall — "
                        "the UWB transform is wrong")
         else:
-            say("ok", f"all {len(pts)} UWB anchors land inside the hall "
+            say("ok", f"all {len(pts)} UWB anchors ({os.path.basename(env)}) land inside the hall "
                       f"(x {min(xs):.1f}–{max(xs):.1f}, y {min(ys):.1f}–{max(ys):.1f})")
 
 
@@ -108,7 +120,8 @@ def main() -> int:
     ap.add_argument("--seconds", type=float, default=45.0)
     ap.add_argument("--topics", nargs="*",
                     default=["lit/fusion/v1/camera", "lit/fusion/v1/uwb",
-                             "lit/fusion/v1/omron", "Omron/status", "Agilox/status"])
+                             "lit/fusion/v1/omron", "UWB/position",
+                             "Omron/status", "Agilox/status"])
     args = ap.parse_args()
     args.broker, args.port = resolve_broker(args.broker, args.port)
 
@@ -128,7 +141,12 @@ def main() -> int:
     pi_offsets = []
 
     def now_corrected() -> float:
+        # Same order as the collector: factory reference, then local NTP, then
+        # the Omron collector clock as a last resort.
         t = time.time()
+        ref = globals().get("REF")
+        if ref is not None:
+            return t + ref["offset_s"]
         if globals().get("LOCAL_SYNCED", True) or not pi_offsets:
             return t
         return t - min(pi_offsets)
@@ -136,6 +154,8 @@ def main() -> int:
     seen = defaultdict(list)          # topic -> [(t_recv, t_valid|None, x, y, kind)]
     raw_seen = defaultdict(int)
     clock_flags = defaultdict(set)
+    uwb_unpatched = set()
+    uwb_rounds = defaultdict(list)
 
     def on_connect(c, u, f, rc, p=None):
         for t in args.topics:
@@ -158,6 +178,21 @@ def main() -> int:
             except Exception:
                 pass
         now = now_corrected()
+        if m.topic == "UWB/position":
+            # The SAL TDoA backend: UWB frame, per-tag, t_round_s once patched.
+            try:
+                d = json.loads(body)
+                xr, yr = frames.uwb_to_factory(float(d["x"]), float(d["y"]))
+            except Exception:
+                return
+            tag = str(d.get("tag_node_id"))
+            kind = f"uwb[{tag}]"
+            tv = d.get("t_round_s")
+            if tv is None:
+                uwb_unpatched.add(tag)
+            seen[kind].append((now, tv, xr, yr))
+            uwb_rounds[tag].append(d.get("solved_round_idx", d.get("round_idx")))
+            return
         if body.lstrip().startswith("{"):
             try:
                 d = json.loads(body)
@@ -227,8 +262,10 @@ def main() -> int:
                 say("bad", line + "  — far too large for a LAN. Check that "
                                   "publisher's clock.")
                 continue
-            if not globals().get("LOCAL_SYNCED", True):
-                line += "  (corrected via the Omron Pi)"
+            if globals().get("REF") is not None:
+                line += "  (on 10.0.0.2 time)"
+            elif not globals().get("LOCAL_SYNCED", True):
+                line += "  (corrected via the Omron collector)"
             say("ok", line)
         else:
             say("warn", line + ", NO source timestamp — its latency cannot be "
@@ -251,7 +288,14 @@ def main() -> int:
             continue
         any_ts = True
         lo, med, hi = lat[0], lat[len(lat)//2], lat[int(len(lat)*0.95)]
-        if lo < -0.005:
+        if kind.startswith("uwb["):
+            # UWB's floor is not transit: the solver only processes a round once
+            # it is >= 2 rounds old, so ~200 ms is by design, not clock error.
+            note = "floor includes the solver's >=2-round deferral, not a clock reading"
+            if lo < -0.005:
+                note = f"{R}clock is >={abs(lo)*1000:.0f} ms AHEAD of this machine{X}"
+                _fatal.append(f"{kind}: clock {abs(lo)*1000:.0f} ms ahead of the collector")
+        elif lo < -0.005:
             note = f"{R}clock is >={abs(lo)*1000:.0f} ms AHEAD of this machine{X}"
             _fatal.append(f"{kind}: clock {abs(lo)*1000:.0f} ms ahead of the collector")
         elif lo < 0.002:
@@ -270,12 +314,12 @@ def main() -> int:
               f"negative,{X}")
         print(f"      {DIM}so a source cannot appear to arrive before it was "
               f"measured.{X}")
-        if not globals().get("LOCAL_SYNCED", True):
+        if globals().get("REF") is None and not globals().get("LOCAL_SYNCED", True):
             # Arrival times were corrected using the Omron's own clock, so the
             # Omron row is zero by construction and says nothing. Only the other
             # sources carry information in this mode.
-            print(f"      {Y}This machine is not NTP-synced, so arrival times were "
-                  f"corrected{X}")
+            print(f"      {Y}No factory reference and no NTP here, so arrival times "
+                  f"were corrected{X}")
             print(f"      {Y}against the Omron — its row above is circular. Read the "
                   f"others.{X}")
 
@@ -294,6 +338,19 @@ def main() -> int:
                        f"{frames.FLOOR_X[1]:.0f} x {frames.FLOOR_Y[1]:.1f} m hall. "
                        "Its coordinate transform is wrong.")
 
+    for tag in sorted(uwb_unpatched):
+        say("bad", f"uwb[{tag}] has no t_round_s — the UWB solver is running "
+                   f"UNPATCHED. Its `timestamp` is ~200 ms late, so UWB latency "
+                   f"would be wrong. Apply sensor-fusion/uwb/patch_backend.py to "
+                   f"the repo it runs from and restart it.")
+    for tag, rounds in sorted(uwb_rounds.items()):
+        r = [x for x in rounds if isinstance(x, int)]
+        back = sum(1 for a, b in zip(r, r[1:]) if b < a)
+        if len(r) > 20 and back > 2:
+            say("bad", f"uwb[{tag}]: round index went backwards {back} times in "
+                       f"{len(r)} fixes — two solvers are publishing at once (e.g. "
+                       f"someone else running localization_gui.py). Their outputs "
+                       f"interleave on the same topic. Make sure only one runs.")
     if not any(k.startswith("uwb") or k == "uwb" for k in seen):
         from endpoints import find_uwb_ws
         ws = find_uwb_ws()

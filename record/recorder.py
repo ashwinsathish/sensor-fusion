@@ -221,7 +221,8 @@ class Run:
         self.streams = {k: Stream(os.path.join(self.dir, f"{k}.csv"), v)
                         for k, v in FIELDS.items()}
         self.clock_log = Stream(os.path.join(self.dir, "clock.csv"),
-                                ["t_local", "offset_s", "n"])
+                                ["t_local", "mode", "ref_offset_s", "ref_delay_s",
+                                 "omron_offset_s", "n"])
         self.dwell = DwellCounter()
         self.motion = MotionMonitor()
         self.marks: list[dict] = []
@@ -247,7 +248,8 @@ class Run:
     def mark(self, label: str, t_pi: float | None) -> None:
         self.marks.append({"label": label, "t": t_pi, "t_local": time.time()})
 
-    def finish(self, clock: PiClock, clock_mode: str = "local_ntp") -> dict:
+    def finish(self, clock: PiClock, clock_mode: str = "local_ntp",
+               ref: dict | None = None) -> dict:
         rows = {k: s.n for k, s in self.streams.items()}
         for s in self.streams.values():
             s.close()
@@ -258,12 +260,19 @@ class Run:
             "rows": rows,
             "clock": {
                 "mode": clock_mode,
-                "offset_to_omron_pi_s": clock.offset,
-                "note": ("this host was NTP-synced; arrival times are its own clock"
-                         if clock_mode == "local_ntp" else
-                         "this host was NOT NTP-synced; arrival times were "
-                         "corrected by the measured offset to the Omron Pi, "
-                         "which is NTP-synced"),
+                "reference": "10.0.0.2 (factory NTP; Server2 PTP agrees to 0.05 ms)",
+                "host_offset_to_reference_s": ref["offset_s"] if ref else None,
+                "omron_collector_offset_s": clock.offset,
+                "note": {
+                    "ref_10.0.0.2": "arrival times corrected onto 10.0.0.2 by a "
+                                    "directly measured SNTP offset",
+                    "local_ntp": "10.0.0.2 unreachable; arrival times are this "
+                                 "host's own NTP clock, not checked against the "
+                                 "factory reference",
+                    "omron_referenced": "no reference and no NTP; arrival times "
+                                        "corrected via the Omron collector clock, "
+                                        "measured ~30 ms off on 16 Sep",
+                }.get(clock_mode, ""),
             },
             "dwells": self.dwell.dwells,
             "marks": self.marks,
@@ -286,10 +295,14 @@ class Run:
     def check(self, clock_mode: str = "local_ntp") -> list[tuple[str, str]]:
         """Returns [(level, message)] — 'ok' | 'warn' | 'bad'."""
         out = []
-        if clock_mode != "local_ntp":
-            out.append(("warn", "this host was not NTP-synced; latencies were "
-                                "corrected via the Omron Pi. Usable, but fix NTP "
-                                "for the next run."))
+        if clock_mode == "local_ntp":
+            out.append(("warn", "10.0.0.2 was unreachable; arrival times use this "
+                                "host's NTP, unverified against the factory "
+                                "reference"))
+        elif clock_mode == "omron_referenced":
+            out.append(("bad", "no reference clock and no NTP — latencies are "
+                               "relative to the Omron collector, itself ~30 ms "
+                               "off. Fix the clock and re-record."))
         n_gt = self.streams["omron"].n
         if n_gt < 50:
             out.append(("bad", f"only {n_gt} ground-truth rows — was MQTT up?"))

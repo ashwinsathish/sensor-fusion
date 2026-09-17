@@ -133,6 +133,7 @@ def _selftest() -> int:
     #    strong check: nine anchors mounted around a 39 x 12.5 m hall cannot
     #    all fall inside it by accident if the transform is wrong.
     env = next((e for e in (
+        "/home/sathishkumara/tdoa_uwb/environments/environment_oic8_M2.json",
         "/home/sathishkumara/tdoa_uwb/environments/environment_oic9_M2.json",
         "/home/sathishkumara/uwb-visualization/environments/environment_oic.json")
         if os.path.exists(e)), None)

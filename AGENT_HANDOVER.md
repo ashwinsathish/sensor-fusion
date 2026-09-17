@@ -373,6 +373,64 @@ the two private packages, which is what makes it convenient.
 
 ---
 
+## 6c. Facts established 16 Sep 2026 (supersede anything above that conflicts)
+
+**Reference clock: `10.0.0.2`** ("NTP-server-host", stratum-3 NTP on the factory
+LAN). Server2 is PTP-locked (`phc2sys` ~2 ns) and agrees with it to 0.05 ms.
+Anchor Pi `30.0.0.17` is on public pool NTP but within 0.15 ms of it.
+**The Omron UpBoard (`40.0.0.37`) is the outlier** — public `ntp.ubuntu.com`
+over 5G, ~30 ms behind, 90 ms jitter, last sample rejected. That clock stamps
+the ground truth, so before collecting run `sudo tools/set_ntp.sh` on it.
+
+The collector no longer trusts `timedatectl`'s yes/no. It measures its own
+offset to 10.0.0.2 by SNTP every 30 s (`timeref.py`) and stamps arrivals on
+that clock. Verified: host deliberately 45 ms off, latencies still recorded as
+0.7 ms (Omron) and 180.9 ms (UWB, true 180). Fallbacks: local NTP, then the Omron
+collector clock — the latter now graded **bad**, since it is the worst clock.
+
+**UWB solver, as actually run on Server2** (30 runs 25 Aug – 16 Sep, always bare
+`python3 localization_gui.py`, so the code defaults apply):
+```
+python3 localization_gui.py --env environments/environment_oic8_M2.json \
+        --ip 10.0.0.2 --server_ip 0.0.0.0 --server_port 8000
+```
+- ROS central node **10.0.0.2** (same machine as the NTP reference), API on 8000
+- **`environment_oic8_M2.json`** — 8 anchors (oic9 minus `0x6666`), initiator
+  `0x1111`, plus a `tags` list mapping IMSI -> device. **`oic9_M2` crashes at
+  startup**: no `tags` key, read outside the try block.
+- serves on **8000**. README says 8001, which is wrong and is taken by the
+  orchestrator on Server2.
+- Server2's checkout is **now on `feat/tag_update_rate`**, 10 commits past what
+  was first patched (outlier rejection, per-tag topics `UWB/position/<tag>`,
+  IMSI API). The patch was re-applied to the new head and re-verified at runtime:
+  `t_round_s` still recovers the true round start to 0.00 ms.
+
+**MQTT client-id collision.** The GUI hardcodes client id `LOCClient`. A second
+instance anywhere makes the broker evict the first; both auto-reconnect and evict
+each other ~once a second. Broker log: 20 collisions on 15 Sep between 40.0.0.11
+(most likely Andreas's PC) and 40.0.0.29. `patch_backend.py` now also makes the
+id unique per host+pid — but that only stops the eviction loop. **Two solvers
+running still interleave two different position streams on `UWB/position`.** Only
+one may run during collection. `preflight.py` detects it (round index going
+backwards).
+
+**`applab_pylib`**: clone URL
+`https://git.silicon-austria.com/wescom/testbed-orchestration/applab_pylib.git`
+(branch `main`), but Server2's copy has an **uncommitted edit to
+`data/UWBLab_IPs.json`** switching the anchor list to OIC's 9 `30.0.0.x` nodes. A
+fresh clone lacks it. Use the tarball `/tmp/applab_pylib.tgz` on Server2 (25 KB,
+no `.git`). Its pins are old: `msgpack_python==0.5.6` (2018) and
+`setuptools==65.5.0`. msgpack 1.0 changed the default for decoding bytes vs str
+keys, so a modern msgpack could change what the parser returns — match Server2's
+Python and msgpack versions if installing elsewhere, or run the solver on
+Server2 where the environment is proven.
+
+**Which tag is on the Omron is still unknown.** The environment maps IMSIs to
+devices but not tag node ids; the 28 Apr log's tag was `0x3c14`. The collector
+records `tag_node_id` on every row, so this can be resolved afterwards, but ask.
+
+---
+
 ## 7. What to do on arrival — in this order
 
 Run these yourself. Report results; do not make the user type them.

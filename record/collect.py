@@ -52,33 +52,63 @@ class Session:
     def __init__(self, args):
         self.args = args
         self.clock = PiClock()
-        # Every latency is `arrival - source time`, measured against THIS
-        # machine's clock. If this clock is not disciplined, every latency is
-        # wrong by however far it is off — silently, and only discoverable
-        # weeks later.
+        # Every latency is `arrival - source time`, so arrival must be stamped on
+        # the SAME clock the sources use. That clock is the factory reference,
+        # 10.0.0.2 (local stratum-3 NTP; Server2 is PTP-locked and agrees to
+        # 0.05 ms). "timedatectl says synchronized" is not enough: the Omron
+        # UpBoard reported synchronized while sitting 30 ms off on public NTP.
         #
-        # Rather than refuse to record, fall back: the Omron Pi IS NTP-synced,
-        # and it stamps every MQTT message, so its offset to this machine is
-        # measurable to well under a millisecond. Subtract that offset from
-        # arrival times and the latencies come out right anyway. The dataset
-        # records which mode was used.
+        # So measure the offset to 10.0.0.2 directly, keep it fresh, and stamp
+        # arrivals as local + offset. Fallbacks, in order: this host's own NTP
+        # if 10.0.0.2 is unreachable; the Omron collector's clock as a last
+        # resort — which is the WORST clock in the system, so it is flagged.
+        self.stop = threading.Event()        # needed by the reference thread
+        self.clock_ok = local_clock_is_synced()
+        self.ref = None                      # latest timeref.measure() result
+        self._ref_lock = threading.Lock()
+        self._start_ref_thread()
+
         # UWB can arrive two ways: published to MQTT by the newest backend, or
         # read straight off the localisation server's websocket. Both at once
         # would write every fix twice, so MQTT wins and the websocket stands by.
         self.uwb_mqtt_last: float = 0.0
-        self.clock_ok = local_clock_is_synced()
-        self.clock_mode = "local_ntp" if self.clock_ok else "pi_referenced"
         self.health = {k: Health() for k in ("omron", "uwb", "camera", "agilox")}
         self.run: Run | None = None
-        self.stop = threading.Event()
         self.status = {"mqtt": "connecting…", "uwb": "off", "camera": "off"}
         self.root = os.path.abspath(args.out)
         self.finished: list[dict] = []
         os.makedirs(self.root, exist_ok=True)
 
+    def _start_ref_thread(self) -> None:
+        import timeref
+
+        def loop():
+            while not self.stop.is_set():
+                r = timeref.measure(timeref.REFERENCE_NTP, samples=6, timeout=1.0)
+                with self._ref_lock:
+                    if r is not None:
+                        r["measured_at"] = time.time()
+                        self.ref = r
+                    elif self.ref and time.time() - self.ref["measured_at"] > 180:
+                        self.ref = None      # stale: stop trusting it
+                self.stop.wait(30.0)
+
+        threading.Thread(target=loop, daemon=True).start()
+
+    @property
+    def clock_mode(self) -> str:
+        if self.ref is not None:
+            return "ref_10.0.0.2"
+        if self.clock_ok:
+            return "local_ntp"
+        return "omron_referenced"
+
     def now(self) -> float:
-        """Arrival time on the best clock available."""
+        """Arrival time on the factory reference clock, as best we can."""
         t = time.time()
+        ref = self.ref
+        if ref is not None:
+            return t + ref["offset_s"]
         if self.clock_ok:
             return t
         off = self.clock.offset
@@ -95,7 +125,7 @@ class Session:
         if self.run is not None:
             return "a run is already going — press s to stop it first"
         if self.clock.offset is None:
-            return "no Omron clock yet — cannot timestamp anything. Is MQTT up?"
+            return "no Omron messages yet — no ground truth. Is Omron/status publishing?"
         n = 1 + sum(1 for f in self.finished if f["mode"] == mode)
         name = f"{time.strftime('%Y%m%dT%H%M%S')}_{mode}_{n}"
         self.run = Run(self.root, name, mode)
@@ -106,7 +136,7 @@ class Session:
             return None, None
         r = self.run
         checks = r.check(self.clock_mode)
-        manifest = r.finish(self.clock, self.clock_mode)
+        manifest = r.finish(self.clock, self.clock_mode, self.ref)
         self.run = None
         self.finished.append(manifest)
         return manifest, checks
@@ -440,12 +470,18 @@ def screen(S: Session) -> str:
     L.append("")
     off = (f"{S.clock.offset:+.4f} s ({S.clock.n} samples)"
            if S.clock.offset is not None else f"{RED}waiting for Omron…{RST}")
-    if S.clock_ok:
-        L.append(f"  clock  {GRN}local NTP{RST}   offset to Omron Pi {off}")
+    mode = S.clock_mode
+    if mode == "ref_10.0.0.2":
+        ro = S.ref["offset_s"] * 1000
+        col = GRN if abs(ro) < 2 else YEL
+        L.append(f"  clock  {col}factory reference 10.0.0.2{RST}   "
+                 f"this host {ro:+.2f} ms (corrected)")
+    elif mode == "local_ntp":
+        L.append(f"  clock  {YEL}10.0.0.2 unreachable — using this host's own NTP{RST}")
     else:
-        L.append(f"  clock  {YEL}NOT NTP-synced — latencies corrected via the "
-                 f"Omron Pi{RST}")
-        L.append(f"         offset {off}")
+        L.append(f"  clock  {RED}no reference, no NTP — corrected via the Omron "
+                 f"collector, the least accurate clock (~30 ms){RST}")
+    L.append(f"         Omron collector vs this host: {off}")
     L.append("")
     L.append(f"  {'sensor':10s} {'Hz':>6s} {'last':>7s}  {'this run':>9s}   state")
     for key, label in (("omron", "OMRON gt"), ("uwb", "UWB"),
@@ -578,10 +614,16 @@ def main() -> int:
             elif key == "q":
                 break
 
-            if S.run is not None and S.clock.offset is not None:
-                S.run.clock_log.write({"t_local": f"{time.time():.3f}",
-                                       "offset_s": f"{S.clock.offset:.6f}",
-                                       "n": S.clock.n})
+            if S.run is not None:
+                ref = S.ref
+                S.run.clock_log.write({
+                    "t_local": f"{time.time():.3f}",
+                    "mode": S.clock_mode,
+                    "ref_offset_s": f"{ref['offset_s']:.6f}" if ref else "",
+                    "ref_delay_s": f"{ref['delay_s']:.6f}" if ref else "",
+                    "omron_offset_s": (f"{S.clock.offset:.6f}"
+                                       if S.clock.offset is not None else ""),
+                    "n": S.clock.n})
             block = screen(S) + (f"\n\n  {YEL}{msg}{RST}" if msg else "")
             if height:
                 sys.stdout.write(f"\033[{height}A")

@@ -59,13 +59,13 @@ else
   warn "no GPU (or torch not installed) — run the camera pipeline elsewhere"
 fi
 
-head_ "clock"
-if timedatectl 2>/dev/null | grep -q "System clock synchronized: yes"; then
-  ok "NTP synchronized"
+head_ "clock (against the factory reference 10.0.0.2)"
+if REFOUT="$("$PY" "$HERE/timeref.py" 2>/dev/null)"; then
+  printf "%s\n" "$REFOUT" | sed 's/^/  /'
 else
-  bad "NOT NTP-synchronized. Fix before collecting:  sudo timedatectl set-ntp true"
-  warn "every latency in the dataset is measured against THIS machine's clock"
+  warn "10.0.0.2 not reachable — only meaningful on the factory network"
 fi
+warn "to sync this machine to it:  sudo tools/set_ntp.sh"
 
 head_ "coordinate transforms"
 "$PY" "$HERE/frames.py" 2>&1 | sed 's/^/  /' | tail -12
