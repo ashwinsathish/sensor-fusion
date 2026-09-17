@@ -431,89 +431,106 @@ records `tag_node_id` on every row, so this can be resolved afterwards, but ask.
 
 ---
 
+## 6d. Status as of 17 Sep 2026 — READ THIS BEFORE SECTION 7
+
+Done and verified, do not redo:
+
+- **Omron UpBoard clock** points at 10.0.0.2 (`/etc/systemd/timesyncd.conf`,
+  original saved as `.bak`). Settled to **±0.3 ms** over 41 samples.
+- **UWB solver** runs on **Server2**, not on this machine, from a separate patched
+  copy that touches nobody else's checkout:
+  `~/lit-fusion/uwb-solver` (user `oic-wlc2`), tmux window **`5g:lit-uwb`**,
+  using Server2's existing `~/venv` (proven environment — `applab_pylib` pins
+  msgpack 0.5.6, so do not try to reinstall it elsewhere). Run command:
+  ```
+  cd ~/lit-fusion/uwb-solver && ~/venv/bin/python localization_gui.py \
+      --env environments/environment_oic8_M2.json --ip 10.0.0.2 --server_port 8000
+  ```
+  **Stopped between sessions** — restart it on collection day, stop it after.
+  The factory-side tmux agent (the user's other agent) operates Server2.
+- **Verified live 17 Sep** against the docked Omron over 60 s: UWB within
+  **0.35 m** of ground truth (transform confirmed on real data); latency round ->
+  arrival **median 276 ms** (268 ms inside the solver, 2-round deferral; ~8 ms
+  network); single solver, round index monotonic over 604 fixes; tag id `0x0`.
+  In the same message the solver's own `timestamp` field was 203 ms later than
+  `t_round_s` — the patch's fix, confirmed in production.
+- A first redeploy dropped every measurement: the ROS stream sends naive ISO
+  UTC strings and the patch called float() on them. Fixed in `26f7412`; the
+  bookkeeping is now wrapped so it can never stop the solver.
+
+Known, not blocking, raised with the UWB team:
+- only **4 of 8 anchors** per fix at the dock (583/604 fixes) — check elsewhere
+  in the hall during the parking run;
+- the solver rejects a TDoA about once a second at ~−8.29 ms, which looks like
+  one anchor's clock correction failing;
+- rare garbage sync rounds (`ts_dtm_response_rx` ≈ 2^64) raise OverflowError in
+  the **unpatched** code as well; one round dropped, harmless.
+
+**What remains is all on this machine (the Legion):** set up, clock, camera
+publisher, then collection.
+
+---
+
 ## 7. What to do on arrival — in this order
 
 Run these yourself. Report results; do not make the user type them.
 
-**1. Where are we?**
+**0. Network.** The Legion must be on the **OIC wifi with the SAL (Barracuda)
+VPN disconnected** — on 4 Sep the VPN captured the route to the camera subnet
+and made `50.0.0.2` unreachable from a laptop that was physically on the factory
+wifi. It needs internet too, for `git clone` and `pip`; the factory network has
+it (Server2 clones from GitHub).
+
+**1. Install.**
+```bash
+cd ~/sensor-fusion && ./setup.sh --with-camera
+```
+Clones `~/Cam-tracking-LIT` (YOLO weights `models/best.pt` and the four camera
+calibrations) if missing, installs the camera stack, checks GPU, clock and
+transforms. Everything else here is self-contained — the 8-anchor environment is
+vendored in `data/`. Override locations with `CAM_TRACKING_REPO` / `LIT_REPO`.
+`Cam-tracking-LIT` may be a private repo: if the clone fails, the user must log
+the Legion into GitHub.
+
+**2. Clock.**
+```bash
+sudo tools/set_ntp.sh        # NTP -> 10.0.0.2
+python3 timeref.py           # want |offset| < 2 ms
+```
+The collector measures and corrects its offset to 10.0.0.2 regardless, but a
+disciplined clock is still the goal.
+
+**3. Reachability.**
 ```bash
 python3 endpoints.py
 ```
-Reports which broker and camera addresses this machine can reach and picks the
-best. On the OIC wifi expect `10.0.0.3:1883` (or `193.171.203.67:1833`) and
-`50.0.0.2:554`. Everything else defaults to `auto` and uses this.
+Expect broker `10.0.0.3:1883` ✓, ROS central `10.0.0.2:8000` ✓, cameras
+`50.0.0.2:554` ✓. The UWB websocket will show nothing while the solver is
+stopped — that is expected.
 
-**2. Install.** The Legion has a GPU, so it runs everything:
+**4. Camera publisher, dry run.**
 ```bash
-./setup.sh --with-camera
+python3 camera/publish_camera.py --dry-run
 ```
+Expect `cameras: 50.0.0.2:554 (factory LAN, direct)` and `capture clock locked`
+from each of the four workers within ~20 s. No lock means RTSP is off on the NVR
+(Reolink -> Network -> Advanced -> Server Settings). Messages only print when a
+tracked class (omron/agilox/person) is in view. Stop with Ctrl-C.
 
-**3. The clock.** This laptop is being set up in the factory for the first
-time, so assume nothing.
+Report steps 1–4 to the user and stop there. Collection needs the robot, the
+UWB solver restarted on Server2, and the user present.
 
-```bash
-timedatectl
-```
-Want: `System clock synchronized: yes`. If not:
-```bash
-sudo timedatectl set-ntp true
-timedatectl                                   # check again
-```
-Still not syncing? Diagnose rather than guess — the factory network *does*
-permit NTP (the Reolink cameras track pool.ntp.org and the anchor Pis are
-synced), so it should work:
-```bash
-systemctl status systemd-timesyncd            # or chronyd
-timedatectl show-timesync --all 2>/dev/null   # what server, has it ever reached it
-```
-If UDP/123 turns out to be blocked on this segment, point it at a local
-server instead — the same one the anchor Pis use is the right answer.
-
-**You are not blocked if it will not sync.** The collector detects an
-undisciplined clock and falls back to referencing the Omron Pi, which IS
-synced and stamps every MQTT message. It measures the offset to sub-millisecond
-and subtracts it from arrival times, so the latencies come out right anyway.
-`session.json` records `clock.mode` as `local_ntp` or `pi_referenced` so the
-dataset always says which was used. Verified: with the host deliberately 3.0 s
-slow, a 250 ms injected latency was still recorded as 250.6 ms.
-
-Prefer real NTP — the fallback depends on MQTT flowing and on the Omron Pi
-being correct — but do not cancel a collection trip over it.
-
-**4. Go/no-go.** Ask the user to park the robot where cameras and UWB can see
-it, then:
-```bash
-python3 preflight.py --seconds 60
-```
-It checks the clock, the broker, the transforms, each source's rate and
-timestamps, whether every source puts the robot inside the hall, and — the
-important one — whether the sources **agree with each other** about where the
-parked robot is. Under ~1 m or do not collect; a larger gap means a coordinate
-transform is wrong, which is invisible in a live plot and ruins the dataset
-silently.
-
-**5. Start the camera publisher** (leave it running):
-```bash
-python3 camera/publish_camera.py --dry-run     # confirm messages look right
-python3 camera/publish_camera.py               # then go live
-```
-Expect `capture clock locked` from each camera within ~20 s. If one never
-locks, RTSP is off on the NVR.
-
-**6. UWB** — only if `preflight.py` showed no UWB source:
-```bash
-cd ~/tdoa_uwb && git branch --show-current      # must be feat/tag_update_rate
-python3 ../sensor-fusion/uwb/patch_backend.py . --dry-run   # "already patched"
-.venv/bin/python localization_gui.py --env environments/environment_oic9_M2.json --ip <ros-central-ip>
-```
-
-**7. Collect:**
-```bash
-python3 record/collect.py
-```
-`1` parking, `2` driving, `s` stop, `q` quit.
-
----
+**On collection day**, in order:
+1. confirm nobody else runs `localization_gui.py` (Andreas); restart the solver
+   in `5g:lit-uwb` on Server2 via the factory-side agent
+2. confirm `Omron/status` is flowing — if silent but the process is alive, the
+   collector is hung (see 6b), restart tmux `omron` on 40.0.0.37
+3. `python3 camera/publish_camera.py` (live) — leave running
+4. park the robot where cameras and UWB see it; `python3 preflight.py --seconds 60`;
+   do not collect on any blocking item
+5. `python3 record/collect.py` — `1` parking, `2` driving, `s` stop; both twice
+6. drive by **pendant**, not MQTT `gotoPoint` (that race hangs the collector)
+7. afterwards stop the camera publisher and the UWB solver
 
 ## 8. The two runs, and why they must be separate
 

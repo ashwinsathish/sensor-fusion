@@ -38,7 +38,7 @@ import urllib.parse
 
 import numpy as np
 
-_CAM_REPO = os.environ.get("CAM_TRACKING_REPO", "/home/sathishkumara/Cam-tracking-LIT")
+_CAM_REPO = os.environ.get("CAM_TRACKING_REPO", os.path.expanduser("~/Cam-tracking-LIT"))
 if _CAM_REPO not in sys.path:
     sys.path.insert(0, _CAM_REPO)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

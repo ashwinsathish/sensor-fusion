@@ -93,9 +93,9 @@ def check_transforms() -> None:
                     "snapshot. If someone recalibrated, this dataset will disagree "
                     "with the rest of the stack.")
     env = next((e for e in (
-        "/home/sathishkumara/tdoa_uwb/environments/environment_oic8_M2.json",
-        "/home/sathishkumara/tdoa_uwb/environments/environment_oic9_M2.json",
-        "/home/sathishkumara/uwb-visualization/environments/environment_oic.json")
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
+                     "environment_oic8_M2.json"),
+        os.path.expanduser("~/tdoa_uwb/environments/environment_oic8_M2.json"))
         if os.path.exists(e)), None)
     if env:
         anchors = json.load(open(env))["anchors"]

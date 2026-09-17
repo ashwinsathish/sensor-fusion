@@ -1,0 +1,119 @@
+{
+    "result_filename" : "results/tdoa_oic_9anchors_M4.h5",
+    "FW" : {"initiator" : "FW/TDOA_Localization_I9_DW3000.hex",
+            "responder" : "FW/TDOA_Localization_R9_DW3000.hex",
+            "config_initiator" : {
+                "uart_baudrate": 1000000,
+                "extract_cir": false,
+                "extract_diagnostics": true,
+                "board": "DW3000",
+                "num_rangings": 100,
+                "sp3_only" : false,
+                "tx_power": "0xFEFEFEFE"
+            },
+            "config_responder" : {
+                "uart_baudrate": 1000000,
+                "extract_cir": false,
+                "extract_diagnostics": true,
+                "board": "DW3000",
+                "num_rangings": 100,
+                "sp3_only" : false,
+                "tx_power" : "0x11F"
+            }},
+    "anchors": [
+        {
+            "id": "0x2222",
+            "rpi_id" : "UWB1",
+            "role": "responder",
+            "info": "",
+            "type" : "Qorvo",
+            "position": {"x": 14.21, "y": -0.32, "z": 3.84}
+        },
+        {
+            "id": "0x1111",
+            "rpi_id" : "UWB2",
+            "role": "initiator",
+            "info": "",
+            "type" : "Qorvo",
+            "position": {"x": 3.83, "y": -0.62, "z": 3.09}
+        },
+        {
+            "id": "0x3333",
+            "rpi_id" : "UWB3",
+            "role": "responder",
+            "info": "",
+            "type" : "Qorvo",
+            "position": {"x": 11.66, "y": -12.41, "z": 5.05}
+        },
+        {
+            "id": "0x4444",
+            "rpi_id" : "UWB4",
+            "role": "responder",
+            "info": "",
+            "type" : "Qorvo",
+            "position": {"x": 3.54, "y": -12.41, "z": 5.05}
+        },
+        {
+            "id": "0x5555",
+            "rpi_id" : "UWB5",
+            "role": "responder",
+            "info": "",
+            "type" : "Qorvo",
+            "position": {"x": -7.35, "y": -0.62, "z": 3.09}
+        },
+        {
+            "id": "0x7777",
+            "rpi_id" : "UWB7",
+            "role": "responder",
+            "info": "",
+            "type" : "Qorvo",
+            "position": {"x": -23.63, "y": -0.62, "z": 3.24}
+        },
+        {
+            "id": "0x8888",
+            "rpi_id" : "UWB8",
+            "role": "responder",
+            "info": "",
+            "type" : "Qorvo",
+            "position": {"x": -15.75, "y": -12.41, "z": 5.05}
+        },
+        {
+            "id": "0x9999",
+            "rpi_id" : "UWB9",
+            "role": "responder",
+            "info": "",
+            "type" : "Qorvo",
+            "position": {"x": -23.85, "y": -12.46, "z": 3.11}
+        }
+    ],
+    "tags": [
+        {
+            "device_type": "Omron",
+            "device_id": "omron_01",
+            "imsi": "262011234567890"
+        },
+        {
+            "device_type": "Agilox",
+            "device_id": "agilox_01",
+            "imsi": "262011234567891"
+        },
+        {
+            "device_type": "UWB",
+            "device_id": "uwb_tag_01",
+            "tag_node_id": "0x0",
+            "imsi": "262011234567892"
+        },
+        {
+            "device_type": "UWB",
+            "device_id": "uwb_tag_02",
+            "tag_node_id": "0x0001",
+            "imsi": "262011234567893"
+        }
+    ],
+
+    "positions": [{"name": "pos_1", "x": 0.0, "y": 0.0, "z": 0.47, "theta": 90.0}],
+    "robot_stream_id" : "9",
+    "optitrack_stream_id" : "9",
+    "environment" : {"info" : "Opel Corsa (only car, LOS)", "file" : "data/environment_models/OpelCorsa_model.json"},
+    "info" : {"general" : "TDOA with 9 anchors, Initiator: UWB6" , "tag_info" : "Qorvo tags."}
+}

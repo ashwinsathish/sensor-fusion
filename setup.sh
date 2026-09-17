@@ -36,7 +36,7 @@ head_ "dependencies"
 # needs (only on the machine that runs YOLO). Installing torch on a laptop
 # without a GPU wastes 2 GB and several minutes, so it is opt-in.
 CORE="paho-mqtt numpy pyyaml matplotlib"
-CAMERA="av ultralytics opencv-python"
+CAMERA="av ultralytics opencv-python pyyaml"
 
 echo "  core: $CORE"
 "$VENV/bin/pip" install -q $CORE 2>&1 | tail -2
@@ -44,6 +44,16 @@ echo "  core: $CORE"
   && ok "core installed" || { bad "core install failed — check network/proxy"; exit 1; }
 
 if [ "${1:-}" = "--with-camera" ]; then
+  CAMREPO="${CAM_TRACKING_REPO:-$HOME/Cam-tracking-LIT}"
+  if [ ! -d "$CAMREPO/.git" ]; then
+    echo "  cloning Cam-tracking-LIT (YOLO weights + camera calibrations) -> $CAMREPO"
+    git clone -q https://github.com/ashwinsathish/Cam-tracking-LIT "$CAMREPO" \
+      && ok "Cam-tracking-LIT cloned" \
+      || bad "could not clone Cam-tracking-LIT — private repo? log in to GitHub first"
+  else
+    ok "Cam-tracking-LIT present at $CAMREPO"
+  fi
+  [ -f "$CAMREPO/models/best.pt" ] && ok "YOLO weights found" || bad "models/best.pt missing"
   echo "  camera: $CAMERA  (this pulls in torch, a few minutes)"
   "$VENV/bin/pip" install -q $CAMERA 2>&1 | tail -3
   "$PY" -c "import av, cv2, ultralytics" 2>/dev/null \

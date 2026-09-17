@@ -548,7 +548,7 @@ def main() -> int:
     ap.add_argument("--no-uwb", action="store_true")
     ap.add_argument("--camera-config", nargs="*", default=[])
     ap.add_argument("--factory-config",
-                    default="/home/sathishkumara/Cam-tracking-LIT/config/factory.yaml")
+                    default=os.path.join(os.environ.get("CAM_TRACKING_REPO", os.path.expanduser("~/Cam-tracking-LIT")), "config", "factory.yaml"))
     ap.add_argument("--want-dwells", type=int, default=8)
     args = ap.parse_args()
     args.broker_host, args.broker_port = resolve_broker(

@@ -63,7 +63,7 @@ def agilox_to_factory(x_mm: float, y_mm: float) -> tuple[float, float]:
             y_mm * AGILOX_SCALE_M_PER_MM + AGILOX_Y_OFFSET_M)
 
 
-def load_site_overrides(repo: str = "/home/sathishkumara/LIT_fac_ray_tracing") -> dict:
+def load_site_overrides(repo: str | None = None) -> dict:
     """Pull the live calibration from sites/<site>.yaml if it is readable.
 
     The constants above are a snapshot. If someone recalibrates the Omron in
@@ -72,6 +72,7 @@ def load_site_overrides(repo: str = "/home/sathishkumara/LIT_fac_ray_tracing") -
     """
     import glob
     import os
+    repo = repo or os.environ.get("LIT_REPO", os.path.expanduser("~/LIT_fac_ray_tracing"))
     out = {}
     for path in glob.glob(os.path.join(repo, "sites", "*.yaml")):
         try:
@@ -93,7 +94,7 @@ def load_site_overrides(repo: str = "/home/sathishkumara/LIT_fac_ray_tracing") -
     return out
 
 
-def apply_site_overrides(repo: str = "/home/sathishkumara/LIT_fac_ray_tracing") -> dict:
+def apply_site_overrides(repo: str | None = None) -> dict:
     g = globals()
     over = load_site_overrides(repo)
     for k, v in over.items():
@@ -133,9 +134,9 @@ def _selftest() -> int:
     #    strong check: nine anchors mounted around a 39 x 12.5 m hall cannot
     #    all fall inside it by accident if the transform is wrong.
     env = next((e for e in (
-        "/home/sathishkumara/tdoa_uwb/environments/environment_oic8_M2.json",
-        "/home/sathishkumara/tdoa_uwb/environments/environment_oic9_M2.json",
-        "/home/sathishkumara/uwb-visualization/environments/environment_oic.json")
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
+                     "environment_oic8_M2.json"),
+        os.path.expanduser("~/tdoa_uwb/environments/environment_oic8_M2.json"))
         if os.path.exists(e)), None)
     if env:
         anchors = json.load(open(env))["anchors"]
