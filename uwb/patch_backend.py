@@ -55,25 +55,39 @@ TWR_META = '''
         # anchor it came from matters too: the Pis carry a stable per-node bias
         # (~2.75 ms fastest to slowest on the 28 Apr log), so recording the
         # source anchor lets that be subtracted.
-        _rows = [(a, ts) for fn, a, _tof, ts in self.measurements
-                 if fn == ready_frame]
-        _earliest = min(_rows, key=lambda r: r[1]) if _rows else (None, None)
+        try:
+            import datetime as _dt
 
-        def _unix(ts):
-            try:
-                return ts.timestamp()
-            except AttributeError:
-                return float(ts) if ts is not None else None
+            def _unix(ts):
+                if ts is None:
+                    return None
+                if isinstance(ts, (int, float)):
+                    return float(ts)
+                if isinstance(ts, _dt.datetime):
+                    return ts.timestamp()          # serial path: naive local now()
+                try:
+                    return float(ts)
+                except (TypeError, ValueError):
+                    d = _dt.datetime.fromisoformat(str(ts).strip().replace("Z", "+00:00"))
+                    if d.tzinfo is None:
+                        d = d.replace(tzinfo=_dt.timezone.utc)   # ROS stream is UTC
+                    return d.timestamp()
 
-        self._lit_meta = {
-            "t_round_s": _unix(_earliest[1]),
-            "anchor_earliest": (f"0x{_earliest[0]:04X}"
-                                if isinstance(_earliest[0], int) else _earliest[0]),
-            "n_anchors": len(_rows),
-            "anchors_used": [f"0x{a:04X}" if isinstance(a, int) else str(a)
-                             for a, _ in _rows],
-            "frame_nr": ready_frame,
-        }
+            _rows = [(a, _unix(ts)) for fn, a, _tof, ts in self.measurements
+                     if fn == ready_frame]
+            _rows_t = [r for r in _rows if r[1] is not None]
+            _earliest = min(_rows_t, key=lambda r: r[1]) if _rows_t else (None, None)
+            self._lit_meta = {
+                "t_round_s": _earliest[1],
+                "anchor_earliest": (f"0x{_earliest[0]:04X}"
+                                    if isinstance(_earliest[0], int) else _earliest[0]),
+                "n_anchors": len(_rows),
+                "anchors_used": [f"0x{a:04X}" if isinstance(a, int) else str(a)
+                                 for a, _ in _rows],
+                "frame_nr": ready_frame,
+            }
+        except Exception:
+            self._lit_meta = {}              # bookkeeping must never stop a fix
         # --- end lit-fusion --------------------------------------------------
 '''
 
@@ -113,6 +127,37 @@ except ModuleNotFoundError:  # pragma: no cover
     localization_3D_linear_ls = None
     localization_3D_nonlinear_ls = None
     localization_2D_nonlinear_ls = None
+
+
+def _lit_unix(ts):
+    """Anchor timestamp -> unix seconds, or None.
+
+    The ROS log stream delivers naive ISO strings in UTC, e.g.
+    '2026-09-17T12:39:07.945776' (verified on Server2: they read 12:39 when
+    local time was 14:39 CEST). The serial path uses datetime.now(), a naive
+    LOCAL datetime. Numbers pass through. Anything unparseable -> None.
+    """
+    import datetime as _dt
+    if ts is None:
+        return None
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    if isinstance(ts, _dt.datetime):
+        return ts.timestamp()                       # naive = local, as now() gives
+    if isinstance(ts, str):
+        txt = ts.strip()
+        try:
+            return float(txt)
+        except ValueError:
+            pass
+        try:
+            d = _dt.datetime.fromisoformat(txt.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=_dt.timezone.utc)  # the ROS stream is UTC
+        return d.timestamp()
+    return None
 # --- end lit-fusion'''
 
 TDOA_ROUND = '        round_idx = payload.get("round_idx", 0)'
@@ -124,22 +169,36 @@ TDOA_TRACK = '''
         # instant the tag blinked. It has to be tracked per round because a
         # round is only solved once it is >= 2 rounds old, so the message that
         # triggers the solve is much younger than the round it describes.
+        # Bookkeeping only: it must never be able to drop a measurement, so any
+        # failure here is swallowed and the solver carries on untouched.
         try:
-            _lit_ts = timestamp.timestamp()
-        except AttributeError:
-            _lit_ts = float(timestamp) if timestamp is not None else None
-        if _lit_ts is not None:
-            if not hasattr(self, "_lit_round_ts"):
-                self._lit_round_ts = {}
-            _cur = self._lit_round_ts.get(round_idx)
-            if _cur is None or _lit_ts < _cur[0]:
-                self._lit_round_ts[round_idx] = (_lit_ts, node_id)
+            _lit_ts = _lit_unix(timestamp)
+            if _lit_ts is not None:
+                if not hasattr(self, "_lit_round_ts"):
+                    self._lit_round_ts = {}
+                _cur = self._lit_round_ts.get(round_idx)
+                if _cur is None or _lit_ts < _cur[0]:
+                    self._lit_round_ts[round_idx] = (_lit_ts, node_id)
+        except Exception:
+            pass
         # --- end lit-fusion --------------------------------------------------
 '''
 
 TDOA_RETURN = "        return results if results else None"
 
 TDOA_META = '''        # --- lit-fusion: describe the round that was actually solved --------
+        try:
+            self._lit_describe_round(ready_round, frame_measurements_by_tag, results)
+        except Exception:
+            self._lit_meta = {}
+        # --- end lit-fusion --------------------------------------------------
+
+        return results if results else None'''
+
+TDOA_METHOD_ANCHOR = "    def evaluate_measurements(self):"
+
+TDOA_METHOD = '''    def _lit_describe_round(self, ready_round, frame_measurements_by_tag, results):
+        # --- lit-fusion: metadata for the round that was actually solved ------
         _lit_rts = getattr(self, "_lit_round_ts", {})
         _lit_t, _lit_who = _lit_rts.get(ready_round, (None, None))
         self._lit_meta = {
@@ -158,7 +217,8 @@ TDOA_META = '''        # --- lit-fusion: describe the round that was actually so
             _lit_rts.pop(_lit_old, None)
         # --- end lit-fusion --------------------------------------------------
 
-        return results if results else None'''
+'''
+
 
 TDOA_PAYLOAD = '''                            uwb_data = {
                                 "x": float(updated_pos[0]),
@@ -256,6 +316,7 @@ def main() -> int:
         TDOA_FILE: [(TDOA_IMPORT, TDOA_IMPORT_NEW),
                     (TDOA_ROUND, TDOA_ROUND + "\n" + TDOA_TRACK),
                     (TDOA_RETURN, TDOA_META),
+                    (TDOA_METHOD_ANCHOR, TDOA_METHOD + TDOA_METHOD_ANCHOR),
                     (TDOA_PAYLOAD, TDOA_PAYLOAD_NEW)],
         GUI_FILE: [(GUI_CLIENT, GUI_CLIENT_NEW)],
     }
